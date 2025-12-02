@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { Request, Response, Router, NextFunction } from 'express';
 import * as admin from 'firebase-admin';
-import { DocumentReference } from '@google-cloud/firestore';
+import { DocumentReference, CollectionReference } from '@google-cloud/firestore';
 
 const app = express();
 const PORT = 3001;
@@ -41,15 +41,13 @@ function getPrivateUserRoot(userId: string): DocumentReference {
     return db.collection('artifacts').doc(appId).collection('users').doc(userId);
 }
 
-// ADDED: Interface to augment the Express Request object
 interface AuthRequest extends Request {
-    userId?: string; // This is where the authenticated UID will be stored
+    userId?: string;
 }
 
 // verify Firebase ID token from authentication header: https://firebase.google.com/docs/auth/admin/verify-id-tokens
 async function authenticate(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
     const authHeader = req.headers.authorization;
-    // check if the header exists and starts with 'Bearer '
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         res.status(401).json({ error: '401: Authentication required (Missing or malformed Bearer Token).' });
         return;
@@ -69,29 +67,58 @@ async function authenticate(req: AuthRequest, res: Response, next: NextFunction)
     }
 }
 
+// controllor
+async function createPost(req: AuthRequest, res: Response): Promise<void> {
+    const { courseId, title, content, tags } = req.body;
+    const authorId = req.userId;
+
+    if (!courseId || !title || !content || !authorId) {
+        res.status(400).json({ error: "Missing required post fields! (courseId, title, content)." });
+        return;
+    }
+
+    try {
+        // 1. reference the public posts collection for the specific course
+        const postsCollectionRef: CollectionReference = getPublicDataRoot()
+            .collection('courses').doc(courseId)
+            .collection('posts');
+
+        // 2. define the new post document structure
+        const newPost = {
+            author_id: authorId,
+            course_id: courseId,
+            title,
+            content,
+            tags: Array.isArray(tags) ? tags : [],
+            vote_score: 0,
+            comment_count: 0,
+            created_at: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        // 3. write the document to firestore
+        const postRef = await postsCollectionRef.add(newPost);
+
+        // 4. success response
+        res.status(201).json({
+            message: 'Post created successfully',
+            postId: postRef.id,
+        });
+
+    } catch (e) {
+        console.error("Error creating post:", e);
+        res.status(500).json({ error: 'Server failed to create post.' });
+    }
+}
+
 app.use(express.json());
 
 const postsRouter: Router = express.Router();
-
-postsRouter.get('/', (req: Request, res: Response) => {
-    // This mocks the data we will eventually fetch from Firestore.
-    res.status(200).json({
-        message: "This is the public list of posts (Mock Data).",
-        data: [
-            { id: "mock-101", title: "Intro to Express", votes: 5 }
-        ]
-    });
-});
-
-postsRouter.post('/', authenticate, (req, res) => {
-    res.status(200).json({ message: "Success! Token verified. Now waiting for Post logic." });
-});
-
+postsRouter.post('/', authenticate, createPost);
 app.use('/api/posts', postsRouter);
 
 // public route
 app.get('/', (req: Request, res: Response) => {
-    res.send('testing backend');
+    res.send('welcome to town square backend!');
 });
 
 // start server
